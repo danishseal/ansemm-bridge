@@ -49,14 +49,19 @@ function parseBigIntOrNull(v: unknown): bigint | null {
   }
 }
 
-/** Bootstrap asset list from static env metadata (chain unreachable). */
+/** Bootstrap asset list from static env metadata (chain unreachable).
+ * Assets whose splFallback is unset/invalid are omitted — the CHANSE mint is
+ * intentionally un-pinned (resolved live from chain Params), so during an
+ * outage it simply isn't offered rather than pointing at a stale CA. */
 function fallbackAssets(): ResolvedAsset[] {
-  return BRIDGE_ASSET_META.map((m) => ({
-    symbol: m.symbol,
-    denom: m.denom,
-    mint: m.splFallback,
-    limits: { maxMintPerTx: null, maxBurnPerTx: null },
-  }));
+  return BRIDGE_ASSET_META
+    .filter((m) => (m.splFallback?.length ?? 0) >= 32)
+    .map((m) => ({
+      symbol: m.symbol,
+      denom: m.denom,
+      mint: m.splFallback,
+      limits: { maxMintPerTx: null, maxBurnPerTx: null },
+    }));
 }
 
 async function fetchChainParams(): Promise<CacheEntry> {

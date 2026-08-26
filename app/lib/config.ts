@@ -1,16 +1,19 @@
 // Centralized env config. All values must be NEXT_PUBLIC_* so they are
 // inlined at build time and visible in the browser bundle.
 
-export const CHAIN_ID = process.env.NEXT_PUBLIC_CHAIN_ID ?? "bwick-1";
-// IMPORTANT: must be HTTPS. The dApp is served over https, so an http:// (or
-// bare-IP) endpoint is blocked by the browser as mixed content and every chain
-// call fails with "Failed to fetch" (including the extension connect). The
-// bare IP http://167.99.147.85 has no TLS; use the TLS-terminated domains.
+export const CHAIN_ID = process.env.NEXT_PUBLIC_CHAIN_ID ?? "ansem-1";
+// NOTE: the only live ansemchain RPC/REST are currently plain HTTP on the
+// validator (rpc.ansemchain.fun:26657 / rest.ansemchain.fun:1317). If this
+// dApp is served over HTTPS, the browser blocks these as mixed content and
+// chain reads fail with "Failed to fetch" (the extension CONNECT itself is
+// fine — that is signed by the extension, not a page fetch). Front these with
+// TLS (or serve the dApp over http) until a TLS RPC/REST exists, then set the
+// NEXT_PUBLIC_ANSEM_RPC / _REST env to the https:// URLs.
 export const BWICK_RPC =
-  process.env.NEXT_PUBLIC_BWICK_RPC ?? "https://rpc.bwick.fun";
+  process.env.NEXT_PUBLIC_BWICK_RPC ?? "http://rpc.ansemchain.fun:26657";
 export const BWICK_REST =
-  process.env.NEXT_PUBLIC_BWICK_REST ?? "https://rest.bwick.fun";
-export const BWICK_DENOM = process.env.NEXT_PUBLIC_BWICK_DENOM ?? "ubwick";
+  process.env.NEXT_PUBLIC_BWICK_REST ?? "http://rest.ansemchain.fun:1317";
+export const BWICK_DENOM = process.env.NEXT_PUBLIC_BWICK_DENOM ?? "uchanse";
 export const BWICK_DECIMALS = Number(
   process.env.NEXT_PUBLIC_BWICK_DECIMALS ?? "6"
 );
@@ -24,15 +27,18 @@ export const BWICK_DECIMALS = Number(
 export const SOLANA_RPC =
   process.env.NEXT_PUBLIC_SOLANA_RPC ??
   "https://mainnet.helius-rpc.com/?api-key=52c98816-cbe0-465d-b110-3d2d32cb46e9";
-export const BWICK_SPL_MINT =
-  process.env.NEXT_PUBLIC_BWICK_SPL_MINT ??
-  "tZJPq6qRfHCxqZWCjkCCM3FaK73wyKsTeWDdLZQpump";
+// CHANSE SPL mint. Deliberately NOT hardcoded: the live mint is resolved at
+// runtime from chain Params (assets[0].solana_mint via live-mint.ts), so a mint
+// rotation is picked up automatically with no redeploy. This value is only an
+// optional offline bootstrap; leave it empty to always follow the chain, or set
+// NEXT_PUBLIC_BWICK_SPL_MINT if you want a fallback while the chain is down.
+export const BWICK_SPL_MINT = process.env.NEXT_PUBLIC_BWICK_SPL_MINT ?? "";
 export const BRIDGE_PROGRAM_ID =
   process.env.NEXT_PUBLIC_BRIDGE_PROGRAM_ID ??
-  "F6Y1rD5oTrxjs7xS8h4ZPrvbBpb5CwCZZK3GEg7gKe9C";
+  "EhicsftNUNuv6Tb5GNb316TppZ9vsHG5cEtTPo5L9TK6";
 export const RELAYER_BWICK_ADDRESS =
   process.env.NEXT_PUBLIC_RELAYER_BWICK_ADDRESS ??
-  "bwick16lfwdy2ljcnrqx6sladq0v3cls2xcknkng9h2x";
+  "ansem17f56n3l5phudqm6fd3qum570csflfsn8wj7ajc";
 
 // ── Multi-asset bridge ──────────────────────────────────────────────────────
 // The bridge carries two assets: the priority asset (CHANSE, the gas denom)
@@ -89,38 +95,42 @@ export function explorerAccountUrl(addr: string): string {
 }
 
 // Keplr ChainInfo payload for `window.keplr.experimentalSuggestChain`.
-// Matches the bwickchain config in the launchpad / chain genesis.
+// Matches the ansemchain config bundled in the ANSEM Wallet extension
+// (chainId "ansem-1", bech32 prefix "ansem", gas denom "uchanse"/CHANSE).
+// The bech32 prefix here is what the extension uses to derive the returned
+// address, so it MUST be "ansem" — a "bwick" prefix makes the extension hand
+// back a bwick1... address that does not exist on ansem-1.
 export const KEPLR_CHAIN_INFO = {
   chainId: CHAIN_ID,
-  chainName: "bwickchain",
+  chainName: "ansemchain",
   rpc: BWICK_RPC,
   rest: BWICK_REST,
   bip44: { coinType: 118 },
   bech32Config: {
-    bech32PrefixAccAddr: "bwick",
-    bech32PrefixAccPub: "bwickpub",
-    bech32PrefixValAddr: "bwickvaloper",
-    bech32PrefixValPub: "bwickvaloperpub",
-    bech32PrefixConsAddr: "bwickvalcons",
-    bech32PrefixConsPub: "bwickvalconspub",
+    bech32PrefixAccAddr: "ansem",
+    bech32PrefixAccPub: "ansempub",
+    bech32PrefixValAddr: "ansemvaloper",
+    bech32PrefixValPub: "ansemvaloperpub",
+    bech32PrefixConsAddr: "ansemvalcons",
+    bech32PrefixConsPub: "ansemvalconspub",
   },
   currencies: [
     {
-      coinDenom: "BWICK",
+      coinDenom: "CHANSE",
       coinMinimalDenom: BWICK_DENOM,
       coinDecimals: BWICK_DECIMALS,
     },
   ],
   feeCurrencies: [
     {
-      coinDenom: "BWICK",
+      coinDenom: "CHANSE",
       coinMinimalDenom: BWICK_DENOM,
       coinDecimals: BWICK_DECIMALS,
       gasPriceStep: { low: 0.01, average: 0.025, high: 0.04 },
     },
   ],
   stakeCurrency: {
-    coinDenom: "BWICK",
+    coinDenom: "CHANSE",
     coinMinimalDenom: BWICK_DENOM,
     coinDecimals: BWICK_DECIMALS,
   },
