@@ -2,17 +2,14 @@
 // inlined at build time and visible in the browser bundle.
 
 export const CHAIN_ID = process.env.NEXT_PUBLIC_CHAIN_ID ?? "ansem-1";
-// NOTE: the only live ansemchain RPC/REST are currently plain HTTP on the
-// validator (rpc.ansemchain.fun:26657 / rest.ansemchain.fun:1317). If this
-// dApp is served over HTTPS, the browser blocks these as mixed content and
-// chain reads fail with "Failed to fetch" (the extension CONNECT itself is
-// fine — that is signed by the extension, not a page fetch). Front these with
-// TLS (or serve the dApp over http) until a TLS RPC/REST exists, then set the
-// NEXT_PUBLIC_ANSEM_RPC / _REST env to the https:// URLs.
+// ansemchain RPC/REST are served over HTTPS via a TLS reverse proxy (Caddy on
+// the validator, fronting CometBFT :26657 and the LCD :1317 with valid
+// Let's Encrypt certs + CORS). Safe to call from an HTTPS-served dApp with no
+// mixed-content issue. Override with NEXT_PUBLIC_BWICK_RPC / _REST if endpoints move.
 export const BWICK_RPC =
-  process.env.NEXT_PUBLIC_BWICK_RPC ?? "http://rpc.ansemchain.fun:26657";
+  process.env.NEXT_PUBLIC_BWICK_RPC ?? "https://rpc.ansemchain.fun";
 export const BWICK_REST =
-  process.env.NEXT_PUBLIC_BWICK_REST ?? "http://rest.ansemchain.fun:1317";
+  process.env.NEXT_PUBLIC_BWICK_REST ?? "https://rest.ansemchain.fun";
 export const BWICK_DENOM = process.env.NEXT_PUBLIC_BWICK_DENOM ?? "uchanse";
 export const BWICK_DECIMALS = Number(
   process.env.NEXT_PUBLIC_BWICK_DECIMALS ?? "6"
