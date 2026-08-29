@@ -4,7 +4,7 @@
 // thin: state + handlers + balance polls live here, the page just
 // reads from this hook.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { PublicKey, type Transaction, type VersionedTransaction } from "@solana/web3.js";
 import {
@@ -85,14 +85,55 @@ function extractError(err: unknown): string {
   }
 }
 
+/**
+ * The ANSEM Wallet's raw in-page Solana provider (`window.solana`, a
+ * `BwickSolana`). We sign through THIS rather than the wallet-adapter for the
+ * ANSEM wallet: the extension nulls its in-page Solana key on a cross-chain
+ * `accountsChanged` (an eth 0x… / cosmos ansem1… address), which makes the
+ * wallet-standard *adapter* fire WalletDisconnectedError and orphan a pending
+ * deposit — but the extension's background session stays alive, so the raw
+ * provider's signTransaction/connect keep working. Returns null for other
+ * wallets (Phantom/Solflare), which use the adapter normally.
+ */
+interface RawSolanaProvider {
+  name?: string;
+  publicKey?: PublicKey | null;
+  connect?: () => Promise<{ publicKey: PublicKey }>;
+  signTransaction?: <T extends Transaction | VersionedTransaction>(
+    tx: T,
+  ) => Promise<T>;
+}
+function getRawAnsemSolana(): RawSolanaProvider | null {
+  if (typeof window === "undefined") return null;
+  const raw = (window as unknown as { solana?: RawSolanaProvider }).solana;
+  return raw && raw.name === "ANSEM Wallet" &&
+    typeof raw.signTransaction === "function"
+    ? raw
+    : null;
+}
+
 export function useBridge() {
   // ── Solana side (wallet-adapter) ──────────────────────────
   const { publicKey, connected, connect: solConnect, disconnect: solDisconnect, wallet, sendTransaction, select, wallets } =
     useWallet();
   const { connection } = useConnection();
 
+  // Remember the last known Solana pubkey. The ANSEM extension can spuriously
+  // null the adapter's key mid-session (see getRawAnsemSolana), which would
+  // leave `publicKey` null right when submit() needs it; the ref lets us fall
+  // back to the address the user actually connected with.
+  const solPubkeyRef = useRef<PublicKey | null>(null);
+  useEffect(() => {
+    if (publicKey) solPubkeyRef.current = publicKey;
+  }, [publicKey]);
+
   // ── BWICK chain side (Keplr / BWICK Wallet) ──────────────
   const [bwickAddress, setBwickAddress] = useState<string | null>(null);
+  // The ANSEM wallet's Solana adapter is spuriously disconnected by the
+  // extension's cross-chain accountsChanged (see getRawAnsemSolana), which nulls
+  // the adapter's publicKey/connected even though the session is alive. Track the
+  // connected pubkey ourselves so the UI keeps displaying it.
+  const [ansemSolAddress, setAnsemSolAddress] = useState<string | null>(null);
   const [bwickClient, setBwickClient] = useState<SigningStargateClient | null>(
     null,
   );
@@ -245,6 +286,18 @@ export function useBridge() {
             // Use the hook's connect so the provider tracks the result
             // and publicKey / connected actually update in React state.
             await solConnect();
+            // The ANSEM adapter gets nulled by the extension's cross-chain
+            // accountsChanged, so capture the pubkey from the raw provider (its
+            // session stays alive) and keep it so the UI shows the connection.
+            if (walletName === "ANSEM Wallet") {
+              try {
+                const raw = getRawAnsemSolana();
+                const pk = raw?.publicKey ?? (await raw?.connect?.())?.publicKey;
+                if (pk) setAnsemSolAddress(pk.toBase58());
+              } catch {
+                /* leave the adapter state as-is */
+              }
+            }
             return;
           }
         }
@@ -284,6 +337,7 @@ export function useBridge() {
 
   const disconnectAll = useCallback(() => {
     void solDisconnect();
+    setAnsemSolAddress(null);
     setBwickClient(null);
     setBwickAddress(null);
     setBwickWalletKind(null);
@@ -343,7 +397,10 @@ export function useBridge() {
     }
 
     if (direction === "sol_to_bwick") {
-      if (!publicKey) {
+      // Prefer the live adapter pubkey; fall back to the last-known one if the
+      // ANSEM extension spuriously nulled it mid-session (see solPubkeyRef).
+      const userPk = publicKey ?? solPubkeyRef.current;
+      if (!userPk) {
         setPhase({ kind: "error", message: "Connect a Solana wallet first." });
         return;
       }
@@ -360,22 +417,28 @@ export function useBridge() {
           () => BigInt(0),
         );
         const adapter = wallet?.adapter;
-        if (!adapter) {
+        // The ANSEM wallet signs through its raw in-page provider (see
+        // getRawAnsemSolana); other wallets go through the adapter.
+        const rawAnsem = getRawAnsemSolana();
+        if (!adapter && !rawAnsem) {
           throw new Error("No Solana wallet adapter available.");
         }
-        // Make sure the adapter session is open. Standard-wallet adapters
-        // (BWICK Wallet, Backpack, etc.) can report `connected: true` from
-        // auto-discovery while their internal account binding is null,
-        // which makes sendTransaction throw "not connected".
-        try {
-          await adapter.connect();
-        } catch (e: unknown) {
-          const msg = e instanceof Error ? e.message.toLowerCase() : "";
-          if (msg && !msg.includes("already")) {
-            throw new Error("Solana wallet not connected. Reconnect and retry.");
+        // For adapter-based wallets, make sure the session is open first —
+        // standard-wallet adapters can report `connected: true` from auto-
+        // discovery while their account binding is null. Skip this entirely for
+        // the ANSEM raw provider: re-calling adapter.connect() is exactly what
+        // trips the cross-chain accountsChanged that disconnects it.
+        if (!rawAnsem && adapter) {
+          try {
+            await adapter.connect();
+          } catch (e: unknown) {
+            const msg = e instanceof Error ? e.message.toLowerCase() : "";
+            if (msg && !msg.includes("already")) {
+              throw new Error("Solana wallet not connected. Reconnect and retry.");
+            }
           }
         }
-        const signer = adapter as unknown as {
+        const signer = (rawAnsem ?? adapter) as unknown as {
           signTransaction?: <T extends Transaction | VersionedTransaction>(
             tx: T,
           ) => Promise<T>;
@@ -393,7 +456,7 @@ export function useBridge() {
         // to sign ("could not resolve signature of a signed transaction"); a
         // plain user-fee-payer tx signs cleanly. Only fall back to the gasless
         // sponsored path for wallets with (near) zero SOL.
-        const userSol = await connection.getBalance(publicKey).catch(() => 0);
+        const userSol = await connection.getBalance(userPk).catch(() => 0);
         // ~0.003 SOL: enough for tx fees + the user_account registration PDA rent.
         const hasSol = userSol >= 3_000_000;
         if (
@@ -403,10 +466,10 @@ export function useBridge() {
         ) {
           try {
             const relayer = new PublicKey(relayerInfo.relayerPublicKey);
-            if (!(await isUserRegistered(connection, publicKey))) {
+            if (!(await isUserRegistered(connection, userPk))) {
               const regTx = await buildSponsoredRegisterTransaction({
                 conn: connection,
-                user: publicKey,
+                user: userPk,
                 relayer,
                 bwickChainAddress: bwickAddress,
               });
@@ -420,7 +483,7 @@ export function useBridge() {
             }
             const depTx = await buildSponsoredDepositTransaction({
               conn: connection,
-              user: publicKey,
+              user: userPk,
               relayer,
               amount: amountBase,
               mint: await getAssetMintPubkey(selectedDenom),
@@ -439,33 +502,42 @@ export function useBridge() {
         if (signature === null) {
           const tx = await buildDepositTransaction({
             conn: connection,
-            user: publicKey,
+            user: userPk,
             bwickChainAddress: bwickAddress,
             amount: amountBase,
             mint: await getAssetMintPubkey(selectedDenom),
           });
-          const trySend = () => adapter.sendTransaction(tx, connection);
-          try {
-            signature = await trySend();
-          } catch (sendErr: unknown) {
-            const msg =
-              sendErr instanceof Error ? sendErr.message.toLowerCase() : "";
-            if (msg.includes("not connected")) {
-              try {
-                await adapter.disconnect();
-              } catch {
-                /* ignore */
-              }
-              await adapter.connect();
+          if (rawAnsem && typeof signer.signTransaction === "function") {
+            // Raw-provider path: sign, then raw-send. Bypasses the adapter,
+            // whose sendTransaction can be orphaned by the spurious disconnect.
+            const signed = await signer.signTransaction(tx);
+            signature = await connection.sendRawTransaction(signed.serialize());
+          } else if (adapter) {
+            const trySend = () => adapter.sendTransaction(tx, connection);
+            try {
               signature = await trySend();
-            } else if (typeof signer.signTransaction === "function") {
-              const signed = await signer.signTransaction(tx);
-              signature = await connection.sendRawTransaction(
-                signed.serialize(),
-              );
-            } else {
-              throw sendErr;
+            } catch (sendErr: unknown) {
+              const msg =
+                sendErr instanceof Error ? sendErr.message.toLowerCase() : "";
+              if (msg.includes("not connected")) {
+                try {
+                  await adapter.disconnect();
+                } catch {
+                  /* ignore */
+                }
+                await adapter.connect();
+                signature = await trySend();
+              } else if (typeof signer.signTransaction === "function") {
+                const signed = await signer.signTransaction(tx);
+                signature = await connection.sendRawTransaction(
+                  signed.serialize(),
+                );
+              } else {
+                throw sendErr;
+              }
             }
+          } else {
+            throw new Error("No Solana signer available.");
           }
         }
 
@@ -629,9 +701,11 @@ export function useBridge() {
 
   return {
     // wallets
-    solAddress: publicKey?.toBase58() ?? null,
-    solConnected: connected,
-    solWalletName: wallet?.adapter.name ?? null,
+    // Fall back to the tracked ANSEM address so a spurious adapter disconnect
+    // doesn't blank the UI while the wallet is still connected.
+    solAddress: publicKey?.toBase58() ?? ansemSolAddress,
+    solConnected: connected || Boolean(ansemSolAddress),
+    solWalletName: wallet?.adapter.name ?? (ansemSolAddress ? "ANSEM Wallet" : null),
     bwickAddress,
     bwickWalletKind,
     bwickProvidersAvailable: () => availableProviders(),
