@@ -29,6 +29,9 @@ interface KeplrLikeProvider {
 
 declare global {
   interface Window {
+    // Current ANSEM extension injects its Keplr-shaped surface here.
+    ansemWallet?: { cosmos?: KeplrLikeProvider };
+    // Pre-rebrand builds used this global; kept as a fallback.
     bwickWallet?: { cosmos?: KeplrLikeProvider };
   }
 }
@@ -37,7 +40,11 @@ function providerForKind(
   kind: WalletKind
 ): KeplrLikeProvider | null {
   if (typeof window === "undefined") return null;
-  if (kind === "bwick") return window.bwickWallet?.cosmos ?? null;
+  // The extension's cosmos provider: new `ansemWallet` global first, then the
+  // legacy `bwickWallet` for anyone still on an older extension build.
+  if (kind === "bwick") {
+    return window.ansemWallet?.cosmos ?? window.bwickWallet?.cosmos ?? null;
+  }
   return (window as unknown as { keplr?: KeplrLikeProvider }).keplr ?? null;
 }
 
@@ -45,7 +52,7 @@ function providerForKind(
 export function availableProviders(): WalletOption[] {
   const out: WalletOption[] = [];
   if (providerForKind("bwick")) {
-    out.push({ kind: "bwick", label: "BWICK Wallet" });
+    out.push({ kind: "bwick", label: "ANSEM Wallet" });
   }
   if (providerForKind("keplr")) {
     out.push({ kind: "keplr", label: "Keplr" });
@@ -85,13 +92,13 @@ export async function connectWallet(args: {
   const chosen = args.kind ?? pickDefault();
   if (!chosen) {
     throw new Error(
-      "No Cosmos wallet detected. Install the BWICK Wallet extension or Keplr."
+      "No Cosmos wallet detected. Install the ANSEM Wallet extension or Keplr."
     );
   }
   const provider = providerForKind(chosen);
   if (!provider) {
     throw new Error(
-      `${chosen === "bwick" ? "BWICK Wallet" : "Keplr"} not detected.`
+      `${chosen === "bwick" ? "ANSEM Wallet" : "Keplr"} not detected.`
     );
   }
   try {

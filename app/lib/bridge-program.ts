@@ -21,7 +21,6 @@ import {
 
 import {
   BRIDGE_PROGRAM_ID,
-  BWICK_SPL_MINT,
   SOLANA_RPC,
 } from "./config";
 import { getBwickMintPubkey } from "./live-mint";
@@ -36,12 +35,10 @@ export const SOLANA_CONNECTION = () =>
  */
 export const BRIDGE_PROGRAM = new PublicKey(BRIDGE_PROGRAM_ID);
 
-/**
- * @deprecated The CA can rotate via chain governance. Call
- * `getBwickMintPubkey()` (from `./live-mint`) at the point of use so the
- * deposit / withdraw flow always references the live mint.
- */
-export const BWICK_MINT = new PublicKey(BWICK_SPL_MINT);
+// The CHANSE mint is intentionally NOT a module-level constant: it can rotate
+// via chain governance and defaults to empty, so `new PublicKey(BWICK_SPL_MINT)`
+// at import time threw "Invalid public key input" and 500'd the whole page.
+// Resolve it live at the point of use via `getBwickMintPubkey()` (./live-mint).
 
 // Pre-computed Anchor discriminators (sha256("global:<name>")[0..8]).
 // Verified by sha256 in node:
@@ -173,14 +170,23 @@ export function buildDepositIx(args: {
   const programId = args.programId ?? BRIDGE_PROGRAM;
   const data = concatBytes(DISCRIM.deposit, encodeU64LE(args.amount));
 
+  // Account order MUST match the deployed program's `Deposit` struct
+  // (instructions.rs): user, bridge_pool, user_account, owner, user_token_account,
+  // pool_vault, ansem_mint, token_program. The Token-2022 fix added `owner`
+  // (has_one on user_account) and `ansem_mint` (transfer_checked needs the mint);
+  // omitting them misaligns the accounts and the program reads pool_vault from the
+  // mint slot -> AccountOwnedByWrongProgram (3007). `owner` == user_account.owner,
+  // which is the depositing user.
   return new TransactionInstruction({
     programId,
     keys: [
       { pubkey: args.user, isSigner: true, isWritable: true },
       { pubkey: bridgePoolPda(args.mint, programId), isSigner: false, isWritable: true },
       { pubkey: userAccountPda(args.user, programId), isSigner: false, isWritable: true },
+      { pubkey: args.user, isSigner: false, isWritable: false },
       { pubkey: args.userTokenAccount, isSigner: false, isWritable: true },
       { pubkey: args.poolVault, isSigner: false, isWritable: true },
+      { pubkey: args.mint, isSigner: false, isWritable: false },
       { pubkey: args.tokenProgram, isSigner: false, isWritable: false },
     ],
     data: Buffer.from(data),
@@ -301,8 +307,13 @@ export async function buildDepositTransaction(args: {
 // SOL can still bridge in. The relayer's co-sign endpoint validates the tx
 // (fee payer must be the relayer, BWICK-only, one bridge ix) before signing.
 
+// The ansemchain relayer's sponsorship API (relayer-info + submit-tx). The old
+// default `relayer.bwick.fun` is dead, so getRelayerInfo() returned null and the
+// gasless path never engaged -> zero-SOL wallets hit "Insufficient Funds". Point
+// at the ansemchain relayer's HTTPS front. Override with NEXT_PUBLIC_RELAYER_API_URL
+// (e.g. http://195.72.61.234:3000 for local dev against val1).
 const RELAYER_API =
-  process.env.NEXT_PUBLIC_RELAYER_API_URL || "https://relayer.bwick.fun";
+  process.env.NEXT_PUBLIC_RELAYER_API_URL || "https://relayer.ansemchain.fun";
 
 // sha256("global:register_sponsored")[0..8]
 const DISCRIM_REGISTER_SPONSORED = new Uint8Array([
