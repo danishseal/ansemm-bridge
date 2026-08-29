@@ -1063,12 +1063,13 @@ function SignInSidebar({
   const [hasBwickExt, setHasBwickExt] = useState(false);
   useEffect(() => {
     function detect() {
+      const w = window as unknown as {
+        ansemWallet?: { cosmos?: unknown };
+        bwickWallet?: { cosmos?: unknown };
+      };
       const cosmosSide =
         typeof window !== "undefined" &&
-        Boolean(
-          (window as unknown as { bwickWallet?: { cosmos?: unknown } })
-            .bwickWallet?.cosmos,
-        );
+        Boolean(w.ansemWallet?.cosmos ?? w.bwickWallet?.cosmos);
       // We can't reliably introspect the Solana Standard Wallet list from
       // outside the adapter, but if the BWICK extension's cosmos surface
       // is up the Solana side is too - they ship together.
@@ -1090,10 +1091,18 @@ function SignInSidebar({
   async function connectBoth() {
     setBusy("both");
     try {
-      // Solana first - wallet-adapter's standard discovery picks up the
-      // BWICK Wallet's Solana provider automatically.
+      // Two independent sides. The extension registers its Solana Standard
+      // Wallet as "ANSEM Wallet" (modules/solana/bwick-solana.ts) — NOT the
+      // pre-rebrand "BWICK Wallet", whose lookup missed and threw
+      // WalletNotSelectedError. Each side is also wrapped on its own: the
+      // cosmos connect uses window.bwickWallet.cosmos directly and does not
+      // depend on the Solana adapter, so a Solana failure must not abort it.
       if (!solConnected) {
-        await bridge.connectSolana("BWICK Wallet");
+        try {
+          await bridge.connectSolana("ANSEM Wallet");
+        } catch {
+          /* surface via phase; still attempt the ansemchain side below */
+        }
       }
       if (!bwickConnected) {
         await bridge.connectBwick("bwick");
@@ -1276,10 +1285,12 @@ function WalletModal({
 }) {
   const solStandard = bridge.solConnected && bridge.solAddress;
   const bwickConnected = Boolean(bridge.bwickAddress);
-  // BWICK Wallet supplies BOTH chains; Phantom/Solflare each supply
+  // The ANSEM Wallet supplies BOTH chains; Phantom/Solflare each supply
   // exactly one. Track *which* adapter is actually attached so the per-row
   // ✓ marks reflect the truth instead of just "any wallet on this chain".
-  const solByBwick = bridge.solWalletName === "BWICK Wallet";
+  // The extension registers its Solana wallet as "ANSEM Wallet" (post-rebrand),
+  // so matching the old "BWICK Wallet" here left it never marked connected.
+  const solByBwick = bridge.solWalletName === "ANSEM Wallet";
   const solByPhantom = bridge.solWalletName === "Phantom";
   const solBySolflare = bridge.solWalletName === "Solflare";
   const bwickByBwick = bridge.bwickWalletKind === "bwick";
@@ -1298,7 +1309,13 @@ function WalletModal({
       // popup.
       if (!solStandard) {
         setBusyStep("solana");
-        await bridge.connectSolana("BWICK Wallet");
+        try {
+          await bridge.connectSolana("ANSEM Wallet");
+        } catch (e) {
+          // The ansemchain side is independent (window.bwickWallet.cosmos), so
+          // don't let a Solana-side failure abort it; record and continue.
+          setStepError(e instanceof Error ? e.message : "Solana connect failed");
+        }
       }
       if (!bwickConnected) {
         setBusyStep("bwick");
@@ -1360,7 +1377,15 @@ function WalletModal({
               if (bothConnected) return;
               void (async () => {
                 if (!solStandard) {
-                  await bridge.connectSolana("BWICK Wallet");
+                  // "ANSEM Wallet" is the extension's registered Solana wallet
+                  // name; the old "BWICK Wallet" missed and threw
+                  // WalletNotSelectedError. Each side is independent, so a
+                  // Solana failure must not skip the ansemchain connect.
+                  try {
+                    await bridge.connectSolana("ANSEM Wallet");
+                  } catch {
+                    /* continue to the ansemchain side */
+                  }
                 }
                 if (!bwickConnected) {
                   await bridge.connectBwick("bwick");
@@ -1450,10 +1475,10 @@ function SignInButton({
 }) {
   const solConnected = bridge.solConnected && bridge.solAddress;
   const bwickConnected = Boolean(bridge.bwickAddress);
-  // BWICK Wallet supplies both chains in one signature, so if both sides
+  // The ANSEM Wallet supplies both chains in one signature, so if both sides
   // were attached through it, treat the pair as a single wallet (one logo).
   const bwickProvidedBoth =
-    bridge.solWalletName === "BWICK Wallet" &&
+    bridge.solWalletName === "ANSEM Wallet" &&
     bridge.bwickWalletKind === "bwick" &&
     solConnected &&
     bwickConnected;
