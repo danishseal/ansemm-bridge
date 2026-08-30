@@ -1588,16 +1588,12 @@ function BridgeInner() {
     <main className="relative h-screen overflow-hidden text-white">
       <div className="fixed inset-0 -z-10 overflow-hidden">
         <Image
-          src="/bridge-bg.svg?v=2"
+          src="/IMG_6247.png"
           alt=""
           fill
           priority
           sizes="100vw"
           className="object-cover object-center"
-          style={{
-            filter: "saturate(2) contrast(1.12) hue-rotate(-14deg)",
-            imageRendering: "crisp-edges",
-          }}
         />
       </div>
       <LeftSidebar
